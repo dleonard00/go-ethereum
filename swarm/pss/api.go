@@ -22,7 +22,6 @@ type APIMsg struct {
 // Additional public methods accessible through API for pss
 type API struct {
 	*Pss
-	returntype int
 }
 
 func NewAPI(ps *Pss) *API {
@@ -49,12 +48,12 @@ func (pssapi *API) Receive(ctx context.Context, topic Topic) (*rpc.Subscription,
 			Asymmetric: asymmetric,
 			Key:        keyid,
 		}
-		log.Warn("making bin msg")
 		if err := notifier.Notify(psssub.ID, apimsg); err != nil {
 			log.Warn(fmt.Sprintf("notification on pss sub topic rpc (sub %v) msg %v failed!", psssub.ID, msg))
 		}
 		return nil
 	}
+
 	deregf := pssapi.Register(&topic, handler)
 	go func() {
 		defer deregf()
@@ -88,20 +87,30 @@ func (pssapi *API) GetAddress(topic Topic, asymmetric bool, key string) (PssAddr
 	return *addr, nil
 }
 
-// Retrieves the node's public key in byte form
-func (pssapi *API) GetPublicKey() (keybytes []byte) {
+// Retrieves the node's base address in hex form
+func (pssapi *API) BaseAddr() (PssAddress, error) {
+	return PssAddress(pssapi.Pss.BaseAddr()), nil
+}
+
+// Retrieves the node's public key in hex form
+func (pssapi *API) GetPublicKey() (keybytes hexutil.Bytes) {
 	key := pssapi.Pss.PublicKey()
 	keybytes = crypto.FromECDSAPub(key)
-	return keybytes
+	return hexutil.Bytes(keybytes)
 }
 
 // Set Public key to associate with a particular Pss peer
-func (pssapi *API) SetPeerPublicKey(pubkey []byte, topic Topic, addr PssAddress) error {
+func (pssapi *API) SetPeerPublicKey(pubkey hexutil.Bytes, topic Topic, addr PssAddress) error {
 	err := pssapi.Pss.SetPeerPublicKey(crypto.ToECDSAPub(pubkey), topic, &addr)
 	if err != nil {
 		return fmt.Errorf("Invalid key: %x", pubkey)
 	}
 	return nil
+}
+
+func (pssapi *API) GetSymmetricKey(symkeyid string) (hexutil.Bytes, error) {
+	symkey, err := pssapi.Pss.GetSymmetricKey(symkeyid)
+	return hexutil.Bytes(symkey), err
 }
 
 func (pssapi *API) GetSymmetricAddressHint(topic Topic, symkeyid string) (PssAddress, error) {
@@ -114,4 +123,12 @@ func (pssapi *API) GetAsymmetricAddressHint(topic Topic, pubkeyid string) (PssAd
 
 func (pssapi *API) StringToTopic(topicstring string) (Topic, error) {
 	return BytesToTopic([]byte(topicstring)), nil
+}
+
+func (pssapi *API) SendAsym(pubkeyhex string, topic Topic, msg hexutil.Bytes) error {
+	return pssapi.Pss.SendAsym(pubkeyhex, topic, msg[:])
+}
+
+func (pssapi *API) SendSym(symkeyhex string, topic Topic, msg hexutil.Bytes) error {
+	return pssapi.Pss.SendSym(symkeyhex, topic, msg[:])
 }
