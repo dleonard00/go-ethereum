@@ -147,7 +147,14 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, ensClient *e
 	// Pss = postal service over swarm (devp2p over bzz)
 	if self.config.PssEnabled {
 		pssparams := pss.NewPssParams(self.privateKey)
-		self.ps = pss.NewPss(to, self.dpa, pssparams)
+		var pssEnsClient *pss.EnsClient
+		if ensClient != nil {
+			pssEnsClient = &pss.EnsClient{
+				Client: ensClient,
+				EnsRoot: config.EnsRoot,
+			}
+		}
+		self.ps = pss.NewPss(to, self.dpa, pssparams, pssEnsClient)
 		if pss.IsActiveHandshake {
 			pss.SetHandshakeController(self.ps, pss.NewHandshakeParams())
 		}
@@ -233,7 +240,12 @@ func (self *Swarm) Start(srv *p2p.Server) error {
 	log.Info(fmt.Sprintf("Swarm network started on bzz address: %x", self.bzz.Hive.Overlay.BaseAddr()))
 
 	if self.ps != nil {
-		self.ps.Start(srv)
+		err = self.ps.Start(srv)
+		if err != nil {
+			log.Error("pss failed", "err", err)
+			return err
+		}
+
 		log.Info("Pss started")
 	}
 

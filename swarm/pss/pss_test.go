@@ -220,7 +220,7 @@ func TestAddressMatch(t *testing.T) {
 	}
 	privkey, err := w.GetPrivateKey(keys)
 	pssp := NewPssParams(privkey)
-	ps := NewPss(kad, nil, pssp)
+	ps := NewPss(kad, nil, pssp, nil)
 
 	pssmsg := &PssMsg{
 		To:      remoteaddr,
@@ -1150,7 +1150,7 @@ func newServices() adapters.Services {
 			pssp := NewPssParams(privkey)
 			pssp.MsgTTL = time.Second * 30
 			pskad := kademlia(ctx.Config.ID)
-			ps := NewPss(pskad, dpa, pssp)
+			ps := NewPss(pskad, dpa, pssp, nil)
 
 			ping := &Ping{
 				OutC: make(chan bool),
@@ -1226,7 +1226,7 @@ func newTestPss(privkey *ecdsa.PrivateKey, overlay network.Overlay, ppextra *Pss
 	if ppextra != nil {
 		pp.SymKeyCacheCapacity = ppextra.SymKeyCacheCapacity
 	}
-	ps := NewPss(overlay, dpa, pp)
+	ps := NewPss(overlay, dpa, pp, nil)
 
 	return ps
 }

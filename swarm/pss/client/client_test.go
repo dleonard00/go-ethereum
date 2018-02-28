@@ -244,7 +244,7 @@ func newServices() adapters.Services {
 			privkey, err := w.GetPrivateKey(keys)
 			psparams := pss.NewPssParams(privkey)
 			pskad := kademlia(ctx.Config.ID)
-			ps := pss.NewPss(pskad, dpa, psparams)
+			ps := pss.NewPss(pskad, dpa, psparams, nil)
 			pshparams := pss.NewHandshakeParams()
 			pshparams.SymKeySendLimit = sendLimit
 			err = pss.SetHandshakeController(ps, pshparams)

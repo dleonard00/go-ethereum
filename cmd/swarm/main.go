@@ -548,15 +548,25 @@ func registerBzzService(bzzconfig *bzzapi.Config, ctx *cli.Context, stack *node.
 			}
 			ensClient = ethclient.NewClient(client)
 
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if _, err := ensClient.NetworkID(ctx); err != nil {
+				utils.Fatalf("ENS API failure: %s", err)
+			}
+
 			//no ENS root address set yet
 			if bzzconfig.EnsRoot == (common.Address{}) {
 				ensAddr, err := detectEnsAddr(client)
 				if err == nil {
 					bzzconfig.EnsRoot = ensAddr
 				} else {
-					log.Warn(fmt.Sprintf("could not determine ENS contract address, using default %s", bzzconfig.EnsRoot), "err", err)
+					utils.Fatalf("could not determine ENS contract address, use --ens-addr to specify the address: %s", err)
 				}
+			} else {
+				log.Trace(fmt.Sprintf("ENS root is %x", bzzconfig.EnsRoot))
 			}
+		} else {
+			utils.Fatalf("ENS API must not be blank")
 		}
 
 		// In production, mockStore must be always nil.
