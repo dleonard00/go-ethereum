@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/contracts/stake"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
@@ -164,7 +165,8 @@ func NewPss(k network.Overlay, dpa *storage.DPA, params *PssParams, ensClient *E
 }
 
 func (self *Pss) checkStaked(pubkey ecdsa.PublicKey) (bool, error) {
-	return true, nil
+	address := crypto.PubkeyToAddress(pubkey)
+	return stake.HasStake(self.ensClient, address)
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -407,6 +409,21 @@ func (self *Pss) SetPeerPublicKey(pubkey *ecdsa.PublicKey, topic Topic, address 
 	if len(pubkeybytes) == 0 {
 		return fmt.Errorf("invalid public key: %v", pubkey)
 	}
+
+	if self.ensClient != nil {
+		staked, err := self.checkStaked(*pubkey)
+
+		if err != nil {
+			return fmt.Errorf("Failed to check stake for address %s: %s", crypto.PubkeyToAddress(*pubkey).String(), err)
+		}
+
+		if !staked {
+			return fmt.Errorf("No stake found for address: %s", crypto.PubkeyToAddress(*pubkey).String())
+		}
+
+		log.Debug("Stake found for peer", "address", crypto.PubkeyToAddress(*pubkey))
+	}
+
 	pubkeyid := common.ToHex(pubkeybytes)
 	psp := &pssPeer{
 		address: address,
