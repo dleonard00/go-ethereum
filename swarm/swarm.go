@@ -150,7 +150,7 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, ensClient *e
 		var pssEnsClient *pss.EnsClient
 		if ensClient != nil {
 			pssEnsClient = &pss.EnsClient{
-				Client: ensClient,
+				Client:  ensClient,
 				EnsRoot: config.EnsRoot,
 			}
 		}

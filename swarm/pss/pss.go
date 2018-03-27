@@ -97,7 +97,7 @@ type Pss struct {
 	privateKey      *ecdsa.PrivateKey // pss can have it's own independent key
 	dpa             *storage.DPA      // we use swarm to store the cache
 	w               *whisper.Whisper  // key and encryption backend
-	ensClient       *EnsClient
+	ensClient       *EnsClient        // ENS & contracts interface
 	auxAPIs         []rpc.API         // builtins (handshake, test) can add APIs
 
 	// sending and forwarding
@@ -166,7 +166,7 @@ func NewPss(k network.Overlay, dpa *storage.DPA, params *PssParams, ensClient *E
 
 func (self *Pss) checkStaked(pubkey ecdsa.PublicKey) (bool, error) {
 	address := crypto.PubkeyToAddress(pubkey)
-	return stake.HasStake(self.ensClient, address)
+	return stake.HasStakeENS(self.ensClient, self.ensClient.EnsRoot, address)
 }
 
 /////////////////////////////////////////////////////////////////////
