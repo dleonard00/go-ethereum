@@ -28,6 +28,8 @@ import (
 	"github.com/ethereum/go-ethereum/swarm/network/stream/intervals"
 	"github.com/ethereum/go-ethereum/swarm/state"
 	"github.com/ethereum/go-ethereum/swarm/storage"
+	"github.com/ethereum/go-ethereum/swarm/services/swap/swap"
+	bzzswap "github.com/ethereum/go-ethereum/swarm/services/swap"
 )
 
 var sendTimeout = 30 * time.Second
@@ -58,7 +60,9 @@ type Peer struct {
 	// that are set on Registry.Subscribe and used
 	// on creating a new client in offered hashes handler.
 	clientParams map[Stream]*clientParams
-	quit         chan struct{}
+	swap       *swap.Swap          // swap instance for the peer connection
+	swapParams *bzzswap.SwapParams // swap settings both local and remote
+	quit     chan struct{}
 }
 
 // NewPeer is the constructor for Peer

@@ -129,6 +129,21 @@ type RetrieveRequestMsg struct {
 
 func (d *Delivery) handleRetrieveRequestMsg(sp *Peer, req *RetrieveRequestMsg) error {
 	log.Trace("received request", "peer", sp.ID(), "hash", req.Key)
+	log.Warn("****** handleRetrieveRequestMsg ******")
+
+	// check swap balance - return if peer has no credit
+	var err error
+	if sp.swap != nil {
+		log.Warn("****** swap.Add(1) ******")
+		err = sp.swap.Add(1)
+	}
+
+	if err != nil {
+		log.Warn(fmt.Sprintf("Delivery.handleRetrieveRequestMsg: %v - cannot process request: %v",
+			req.Key.Log(), err), "peer", sp.ID(), "err", err)
+		return err
+	}
+
 	s, err := sp.getServer(NewStream(swarmChunkServerStreamName, "", false))
 	if err != nil {
 		return err
@@ -225,6 +240,8 @@ R:
 
 // RequestFromPeers sends a chunk retrieve request to
 func (d *Delivery) RequestFromPeers(hash []byte, skipCheck bool, peersToSkip ...discover.NodeID) error {
+	log.Warn("****** RequestFromPeers ******")
+
 	var success bool
 	var err error
 	d.overlay.EachConn(hash, 255, func(p network.OverlayConn, po int, nn bool) bool {
@@ -249,6 +266,11 @@ func (d *Delivery) RequestFromPeers(hash []byte, skipCheck bool, peersToSkip ...
 			return true
 		}
 		success = true
+
+		if sp.swap != nil {
+			log.Warn("****** swap.Add(-1) ******")
+			err = sp.swap.Add(-1)
+		}
 		return false
 	})
 	if success {

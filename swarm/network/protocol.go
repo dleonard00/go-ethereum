@@ -32,6 +32,9 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/protocols"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/swarm/state"
+	bzzswap "github.com/ethereum/go-ethereum/swarm/services/swap"
+	"github.com/ethereum/go-ethereum/swarm/services/swap/swap"
+	"github.com/ethereum/go-ethereum/contracts/chequebook"
 )
 
 //metrics variables
@@ -118,6 +121,11 @@ type Bzz struct {
 	handshakes   map[discover.NodeID]*HandshakeMsg
 	streamerSpec *protocols.Spec
 	streamerRun  func(*BzzPeer) error
+	swapEnabled bool                // flag to enable SWAP (will be set via Caps in handshake)
+	swap        *swap.Swap          // swap instance for the peer connection
+	swapParams  *bzzswap.SwapParams // swap settings both local and remote
+	backend    chequebook.Backend
+
 }
 
 // NewBzz is the swarm protocol constructor
@@ -132,6 +140,8 @@ func NewBzz(config *BzzConfig, kad Overlay, store state.Store, streamerSpec *pro
 		handshakes:   make(map[discover.NodeID]*HandshakeMsg),
 		streamerRun:  streamerRun,
 		streamerSpec: streamerSpec,
+		swapEnabled:  config.HiveParams.swapEnabled,
+		swapParams:   bzzswap.NewDefaultSwapParams(), //TODO: May need to also account for when custom params are set.
 	}
 }
 
@@ -205,6 +215,8 @@ func (b *Bzz) APIs() []rpc.API {
 func (b *Bzz) RunProtocol(spec *protocols.Spec, run func(*BzzPeer) error) func(*p2p.Peer, p2p.MsgReadWriter) error {
 	return func(p *p2p.Peer, rw p2p.MsgReadWriter) error {
 		// wait for the bzz protocol to perform the handshake
+		log.Warn("****** RunProtocol ******")
+
 		handshake, _ := b.GetHandshake(p.ID())
 		defer b.removeHandshake(p.ID())
 		select {
@@ -246,6 +258,9 @@ func performHandshake(p *protocols.Peer, handshake *HandshakeMsg) error {
 // runBzz is the p2p protocol run function for the bzz base protocol
 // that negotiates the bzz handshake
 func (b *Bzz) runBzz(p *p2p.Peer, rw p2p.MsgReadWriter) error {
+
+	log.Warn("****** runBzz ******")
+
 	handshake, _ := b.GetHandshake(p.ID())
 	if !<-handshake.init {
 		return fmt.Errorf("%08x: bzz already started on peer %08x", b.localAddr.Over()[:4], ToOverlayAddr(p.ID().Bytes())[:4])
@@ -253,6 +268,16 @@ func (b *Bzz) runBzz(p *p2p.Peer, rw p2p.MsgReadWriter) error {
 	close(handshake.init)
 	defer b.removeHandshake(p.ID())
 	peer := protocols.NewPeer(p, rw, BzzSpec)
+
+	// NOTE: This may not be the best place for this
+	//if b.swapEnabled {
+	//	// set remote profile for accounting
+	//	b.swap, err = bzzswap.NewSwap(b.swapParams, handshake.Swap, b.backend, b.swapParams.)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
+
 	err := performHandshake(peer, handshake)
 	if err != nil {
 		log.Warn(fmt.Sprintf("%08x: handshake failed with remote peer %08x: %v", b.localAddr.Over()[:4], ToOverlayAddr(p.ID().Bytes())[:4], err))
@@ -300,11 +325,13 @@ func (p *BzzPeer) LastActive() time.Time {
 * Version: 8 byte integer version of the protocol
 * NetworkID: 8 byte integer network identifier
 * Addr: the address advertised by the node including underlay and overlay connecctions
+* Swap: info for the swarm accounting protocol
 */
 type HandshakeMsg struct {
 	Version   uint64
 	NetworkID uint64
 	Addr      *BzzAddr
+	Swap      *bzzswap.SwapProfile
 
 	// peerAddr is the address received in the peer handshake
 	peerAddr *BzzAddr
@@ -316,7 +343,7 @@ type HandshakeMsg struct {
 
 // String pretty prints the handshake
 func (bh *HandshakeMsg) String() string {
-	return fmt.Sprintf("Handshake: Version: %v, NetworkID: %v, Addr: %v", bh.Version, bh.NetworkID, bh.Addr)
+	return fmt.Sprintf("Handshake: Version: %v, NetworkID: %v, Addr: %v, Swap: %v,", bh.Version, bh.NetworkID, bh.Addr, bh.Swap)
 }
 
 // Perform initiates the handshake and validates the remote handshake message
@@ -339,20 +366,25 @@ func (b *Bzz) removeHandshake(peerID discover.NodeID) {
 	delete(b.handshakes, peerID)
 }
 
-// GetHandshake returns the bzz handhake that the remote peer with peerID sent
+// GetHandshake returns the bzz handshake that the remote peer with peerID sent
 func (b *Bzz) GetHandshake(peerID discover.NodeID) (*HandshakeMsg, bool) {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 	handshake, found := b.handshakes[peerID]
+
 	if !found {
 		handshake = &HandshakeMsg{
 			Version:   uint64(BzzSpec.Version),
 			NetworkID: uint64(NetworkID),
 			Addr:      b.localAddr,
+			Swap: &bzzswap.SwapProfile{
+				Profile:    b.swapParams.Profile,
+				PayProfile: b.swapParams.PayProfile,
+			},
 			init:      make(chan bool, 1),
 			done:      make(chan struct{}),
 		}
-		// when handhsake is first created for a remote peer
+		// when handshake is first created for a remote peer
 		// it is initialised with the init
 		handshake.init <- true
 		b.handshakes[peerID] = handshake

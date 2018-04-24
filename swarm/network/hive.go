@@ -62,6 +62,7 @@ type HiveParams struct {
 	PeersBroadcastSetSize uint8 // how many peers to use when relaying
 	MaxPeersPerRequest    uint8 // max size for peer address batches
 	KeepAliveInterval     time.Duration
+	swapEnabled           bool
 }
 
 // NewHiveParams returns hive config with only the
@@ -71,6 +72,7 @@ func NewHiveParams() *HiveParams {
 		PeersBroadcastSetSize: 3,
 		MaxPeersPerRequest:    5,
 		KeepAliveInterval:     500 * time.Millisecond,
+		swapEnabled:           false,
 	}
 }
 
@@ -95,6 +97,10 @@ func NewHive(params *HiveParams, overlay Overlay, store state.Store) *Hive {
 		Overlay:    overlay,
 		Store:      store,
 	}
+}
+
+func (self *Hive) SwapEnabled(on bool) {
+	self.swapEnabled = on
 }
 
 // Start stars the hive, receives p2p.Server only at startup
