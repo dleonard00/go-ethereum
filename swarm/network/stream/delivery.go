@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/swarm/network"
 	"github.com/ethereum/go-ethereum/swarm/storage"
@@ -32,6 +33,14 @@ import (
 const (
 	swarmChunkServerStreamName = "RETRIEVE_REQUEST"
 	deliveryCap                = 32
+)
+
+var (
+	processReceivedChunksCount    = metrics.NewRegisteredCounter("network.stream.received_chunks.count", nil)
+	handleRetrieveRequestMsgCount = metrics.NewRegisteredCounter("network.stream.handle_retrieve_request_msg.count", nil)
+
+	requestFromPeersCount     = metrics.NewRegisteredCounter("network.stream.request_from_peers.count", nil)
+	requestFromPeersEachCount = metrics.NewRegisteredCounter("network.stream.request_from_peers_each.count", nil)
 )
 
 type Delivery struct {
@@ -129,20 +138,7 @@ type RetrieveRequestMsg struct {
 
 func (d *Delivery) handleRetrieveRequestMsg(sp *Peer, req *RetrieveRequestMsg) error {
 	log.Trace("received request", "peer", sp.ID(), "hash", req.Key)
-	log.Warn("****** handleRetrieveRequestMsg ******")
-
-	// check swap balance - return if peer has no credit
-	var err error
-	if sp.swap != nil {
-		log.Warn("****** swap.Add(1) ******")
-		err = sp.swap.Add(1)
-	}
-
-	if err != nil {
-		log.Warn(fmt.Sprintf("Delivery.handleRetrieveRequestMsg: %v - cannot process request: %v",
-			req.Key.Log(), err), "peer", sp.ID(), "err", err)
-		return err
-	}
+	handleRetrieveRequestMsgCount.Inc(1)
 
 	s, err := sp.getServer(NewStream(swarmChunkServerStreamName, "", false))
 	if err != nil {
@@ -209,6 +205,8 @@ func (d *Delivery) handleChunkDeliveryMsg(sp *Peer, req *ChunkDeliveryMsg) error
 func (d *Delivery) processReceivedChunks() {
 R:
 	for req := range d.receiveC {
+		processReceivedChunksCount.Inc(1)
+
 		// this should be has locally
 		chunk, err := d.db.Get(req.Key)
 		if !bytes.Equal(chunk.Key, req.Key) {
@@ -240,10 +238,9 @@ R:
 
 // RequestFromPeers sends a chunk retrieve request to
 func (d *Delivery) RequestFromPeers(hash []byte, skipCheck bool, peersToSkip ...discover.NodeID) error {
-	log.Warn("****** RequestFromPeers ******")
-
 	var success bool
 	var err error
+	requestFromPeersCount.Inc(1)
 	d.overlay.EachConn(hash, 255, func(p network.OverlayConn, po int, nn bool) bool {
 		spId := p.(network.Peer).ID()
 		for _, p := range peersToSkip {
@@ -265,12 +262,8 @@ func (d *Delivery) RequestFromPeers(hash []byte, skipCheck bool, peersToSkip ...
 		if err != nil {
 			return true
 		}
+		requestFromPeersEachCount.Inc(1)
 		success = true
-
-		if sp.swap != nil {
-			log.Warn("****** swap.Add(-1) ******")
-			err = sp.swap.Add(-1)
-		}
 		return false
 	})
 	if success {

@@ -178,7 +178,7 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, config *api.
 	var resourceHandler *storage.ResourceHandler
 	// if use resource updates
 
-	if self.config.ResourceEnabled && resolver != nil {
+	if resolver != nil {
 		resolver.SetNameHash(ens.EnsNode)
 		rhparams := &storage.ResourceHandlerParams{
 			// TODO: config parameter to set limits
@@ -196,6 +196,8 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, config *api.
 			return nil, err
 		}
 		resourceHandler.SetStore(self.lstore)
+	} else {
+		log.Warn("No ENS API specified, resource updates will be disabled")
 	}
 
 	var validators []storage.ChunkValidator
@@ -227,12 +229,10 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, config *api.
 	self.bzz = network.NewBzz(bzzconfig, to, stateStore, stream.Spec, self.streamer.Run)
 
 	// Pss = postal service over swarm (devp2p over bzz)
-	if config.PssEnabled {
-		pssparams := pss.NewPssParams(self.privateKey)
-		self.ps = pss.NewPss(to, pssparams)
-		if pss.IsActiveHandshake {
-			pss.SetHandshakeController(self.ps, pss.NewHandshakeParams())
-		}
+	pssparams := pss.NewPssParams(self.privateKey)
+	self.ps = pss.NewPss(to, pssparams)
+	if pss.IsActiveHandshake {
+		pss.SetHandshakeController(self.ps, pss.NewHandshakeParams())
 	}
 
 	self.api = api.NewApi(self.dpa, self.dns, resourceHandler)
@@ -449,9 +449,6 @@ func (self *Swarm) Protocols() (protos []p2p.Protocol) {
 	if self.ps != nil {
 		protos = append(protos, self.ps.Protocols()...)
 	}
-	if self.streamer != nil {
-		protos = append(protos, self.streamer.Protocols()...)
-	}
 	return
 }
 
@@ -471,14 +468,14 @@ func (self *Swarm) APIs() []rpc.API {
 		// public APIs
 		{
 			Namespace: "bzz",
-			Version:   "0.1",
+			Version:   "3.0",
 			Service:   &Info{self.config, chequebook.ContractParams},
 			Public:    true,
 		},
 		// admin APIs
 		{
 			Namespace: "bzz",
-			Version:   "0.1",
+			Version:   "3.0",
 			Service:   api.NewControl(self.api, self.bzz.Hive),
 			Public:    false,
 		},
