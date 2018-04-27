@@ -855,6 +855,13 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.RequestURI == "/" && strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode("Welcome to Swarm!")
+		return
+	}	
+	
 	uri, err := api.Parse(strings.TrimLeft(r.URL.Path, "/"))
 	if err != nil {
 		Respond(w, req, fmt.Sprintf("invalid URI %q", r.URL.Path), http.StatusBadRequest)
@@ -863,8 +870,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	req.uri = uri
 
-	log.Debug("parsed request path", "ruid", req.ruid, "method", req.Method, "uri", req.uri)
-	log.Debug("parsed request path", "uri.Addr", req.uri.Addr, "uri.path", req.uri.Path, "uri.Scheme", req.uri.Scheme)
+	log.Debug("parsed request path", "ruid", req.ruid, "method", req.Method, "uri.Addr", req.uri.Addr, "uri.Path", req.uri.Path, "uri.Scheme", req.uri.Scheme)
 
 	switch r.Method {
 	case "POST":
