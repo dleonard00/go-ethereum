@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -52,24 +53,21 @@ type resourceResponse struct {
 }
 
 var (
-	postRawCount     = metrics.NewRegisteredCounter("api.http.post.raw.count", nil)
-	postRawFail      = metrics.NewRegisteredCounter("api.http.post.raw.fail", nil)
-	postFilesCount   = metrics.NewRegisteredCounter("api.http.post.files.count", nil)
-	postFilesFail    = metrics.NewRegisteredCounter("api.http.post.files.fail", nil)
-	deleteCount      = metrics.NewRegisteredCounter("api.http.delete.count", nil)
-	deleteFail       = metrics.NewRegisteredCounter("api.http.delete.fail", nil)
-	getCount         = metrics.NewRegisteredCounter("api.http.get.count", nil)
-	getFail          = metrics.NewRegisteredCounter("api.http.get.fail", nil)
-	getFileCount     = metrics.NewRegisteredCounter("api.http.get.file.count", nil)
-	getFileNotFound  = metrics.NewRegisteredCounter("api.http.get.file.notfound", nil)
-	getFileFail      = metrics.NewRegisteredCounter("api.http.get.file.fail", nil)
-	getFilesCount    = metrics.NewRegisteredCounter("api.http.get.files.count", nil)
-	getFilesFail     = metrics.NewRegisteredCounter("api.http.get.files.fail", nil)
-	getListCount     = metrics.NewRegisteredCounter("api.http.get.list.count", nil)
-	getListFail      = metrics.NewRegisteredCounter("api.http.get.list.fail", nil)
-	htmlRequestCount = metrics.NewRegisteredCounter("http.request.html.count", nil)
-	jsonRequestCount = metrics.NewRegisteredCounter("http.request.json.count", nil)
-	requestTimer     = metrics.NewRegisteredResettingTimer("http.request.time", nil)
+	postRawCount    = metrics.NewRegisteredCounter("api.http.post.raw.count", nil)
+	postRawFail     = metrics.NewRegisteredCounter("api.http.post.raw.fail", nil)
+	postFilesCount  = metrics.NewRegisteredCounter("api.http.post.files.count", nil)
+	postFilesFail   = metrics.NewRegisteredCounter("api.http.post.files.fail", nil)
+	deleteCount     = metrics.NewRegisteredCounter("api.http.delete.count", nil)
+	deleteFail      = metrics.NewRegisteredCounter("api.http.delete.fail", nil)
+	getCount        = metrics.NewRegisteredCounter("api.http.get.count", nil)
+	getFail         = metrics.NewRegisteredCounter("api.http.get.fail", nil)
+	getFileCount    = metrics.NewRegisteredCounter("api.http.get.file.count", nil)
+	getFileNotFound = metrics.NewRegisteredCounter("api.http.get.file.notfound", nil)
+	getFileFail     = metrics.NewRegisteredCounter("api.http.get.file.fail", nil)
+	getFilesCount   = metrics.NewRegisteredCounter("api.http.get.files.count", nil)
+	getFilesFail    = metrics.NewRegisteredCounter("api.http.get.files.fail", nil)
+	getListCount    = metrics.NewRegisteredCounter("api.http.get.list.count", nil)
+	getListFail     = metrics.NewRegisteredCounter("api.http.get.list.fail", nil)
 )
 
 // ServerConfig is the basic configuration needed for the HTTP server and also
@@ -160,7 +158,7 @@ func (s *Server) HandlePostRaw(w http.ResponseWriter, r *Request) {
 	fmt.Fprint(w, key)
 }
 
-// HandlePostFiles handles a POST request (or deprecated PUT request) to
+// HandlePostFiles handles a POST request to
 // bzz:/<hash>/<path> which contains either a single file or multiple files
 // (either a tar archive or multipart form), adds those files either to an
 // existing manifest or to a new manifest under <path> and returns the
@@ -363,16 +361,42 @@ func (s *Server) HandleDelete(w http.ResponseWriter, r *Request) {
 	fmt.Fprint(w, newKey)
 }
 
+// possible combinations:
+// /			add multihash update to existing hash
+// /raw 		add raw update to existing hash
+// /#			create new resource with first update as mulitihash
+// /raw/#		create new resource with first update raw
+func resourcePostMode(path string) (isRaw bool, frequency uint64, err error) {
+	re, err := regexp.Compile("^(raw)?/?([0-9]+)?$")
+	if err != nil {
+		return isRaw, frequency, err
+	}
+	m := re.FindAllStringSubmatch(path, 2)
+	var freqstr = "0"
+	if len(m) > 0 {
+		if m[0][1] != "" {
+			isRaw = true
+		}
+		if m[0][2] != "" {
+			freqstr = m[0][2]
+		}
+	} else if len(path) > 0 {
+		return isRaw, frequency, fmt.Errorf("invalid path")
+	}
+	frequency, err = strconv.ParseUint(freqstr, 10, 64)
+	return isRaw, frequency, err
+}
+
 func (s *Server) HandlePostResource(w http.ResponseWriter, r *Request) {
 	log.Debug("handle.post.resource", "ruid", r.ruid)
 
 	var outdata []byte
-	if r.uri.Path != "" {
-		frequency, err := strconv.ParseUint(r.uri.Path, 10, 64)
-		if err != nil {
-			Respond(w, r, fmt.Sprintf("cannot parse frequency parameter: %v", err), http.StatusBadRequest)
-			return
-		}
+	isRaw, frequency, err := resourcePostMode(r.uri.Path)
+	if err != nil {
+		Respond(w, r, err.Error(), http.StatusBadRequest)
+	}
+	if frequency > 0 {
+
 		key, err := s.api.ResourceCreate(r.Context(), r.uri.Addr, frequency)
 		if err != nil {
 			code, err2 := s.translateResourceError(w, r, "resource creation fail", err)
@@ -402,7 +426,11 @@ func (s *Server) HandlePostResource(w http.ResponseWriter, r *Request) {
 		Respond(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_, _, _, err = s.api.ResourceUpdate(r.Context(), r.uri.Addr, data)
+	if isRaw {
+		_, _, _, err = s.api.ResourceUpdate(r.Context(), r.uri.Addr, data)
+	} else {
+		_, _, _, err = s.api.ResourceUpdateMultihash(r.Context(), r.uri.Addr, data)
+	}
 	if err != nil {
 		code, err2 := s.translateResourceError(w, r, "mutable resource update fail", err)
 
@@ -565,7 +593,7 @@ func (s *Server) HandleGet(w http.ResponseWriter, r *Request) {
 	w.Header().Set("X-Decrypted", fmt.Sprintf("%v", isEncrypted))
 
 	switch {
-	case r.uri.Raw() || r.uri.DeprecatedRaw():
+	case r.uri.Raw():
 		// allow the request to overwrite the content type using a query
 		// parameter
 		contentType := "application/octet-stream"
@@ -860,8 +888,8 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode("Welcome to Swarm!")
 		return
-	}	
-	
+	}
+
 	uri, err := api.Parse(strings.TrimLeft(r.URL.Path, "/"))
 	if err != nil {
 		Respond(w, req, fmt.Sprintf("invalid URI %q", r.URL.Path), http.StatusBadRequest)
@@ -874,7 +902,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case "POST":
-		if uri.Raw() || uri.DeprecatedRaw() {
+		if uri.Raw() {
 			log.Debug("handlePostRaw")
 			s.HandlePostRaw(w, req)
 		} else if uri.Resource() {
@@ -886,20 +914,11 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		}
 
 	case "PUT":
-		// DEPRECATED:
-		//   clients should send a POST request (the request creates a
-		//   new manifest leaving the existing one intact, so it isn't
-		//   strictly a traditional PUT request which replaces content
-		//   at a URI, and POST is more ubiquitous)
-		if uri.Raw() || uri.DeprecatedRaw() {
-			Respond(w, req, fmt.Sprintf("PUT method to %s not allowed", uri), http.StatusBadRequest)
-			return
-		} else {
-			s.HandlePostFiles(w, req)
-		}
+		Respond(w, req, fmt.Sprintf("PUT method to %s not allowed", uri), http.StatusBadRequest)
+		return
 
 	case "DELETE":
-		if uri.Raw() || uri.DeprecatedRaw() {
+		if uri.Raw() {
 			Respond(w, req, fmt.Sprintf("DELETE method to %s not allowed", uri), http.StatusBadRequest)
 			return
 		}
@@ -912,7 +931,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if uri.Raw() || uri.Hash() || uri.DeprecatedRaw() {
+		if uri.Raw() || uri.Hash() {
 			s.HandleGet(w, req)
 			return
 		}

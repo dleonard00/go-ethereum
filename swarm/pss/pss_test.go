@@ -35,26 +35,15 @@ import (
 	whisper "github.com/ethereum/go-ethereum/whisper/whisperv5"
 )
 
-const (
-	pssServiceName = "pss"
-	bzzServiceName = "bzz"
-)
-
 var (
-	initOnce         = sync.Once{}
-	snapshotfile     string
-	debugdebugflag   = flag.Bool("vv", false, "veryverbose")
-	debugflag        = flag.Bool("v", false, "verbose")
-	snapshotflag     = flag.String("s", "", "snapshot filename")
-	messagesflag     = flag.Int("m", 0, "number of messages to generate (default = number of nodes). Ignored if -s is not set")
-	addresssizeflag  = flag.Int("b", 32, "number of bytes to use for address. Ignored if -s is not set")
-	adaptertypeflag  = flag.String("a", "sim", "Adapter type to use. Ignored if -s is not set")
-	messagedelayflag = flag.Int("d", 1000, "Message max delay period, in ms")
-	w                *whisper.Whisper
-	wapi             *whisper.PublicWhisperAPI
-	psslogmain       log.Logger
-	pssprotocols     map[string]*protoCtrl
-	useHandshake     bool
+	initOnce       = sync.Once{}
+	debugdebugflag = flag.Bool("vv", false, "veryverbose")
+	debugflag      = flag.Bool("v", false, "verbose")
+	w              *whisper.Whisper
+	wapi           *whisper.PublicWhisperAPI
+	psslogmain     log.Logger
+	pssprotocols   map[string]*protoCtrl
+	useHandshake   bool
 )
 
 func init() {
@@ -144,7 +133,7 @@ func TestCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps := newTestPss(privkey, nil, nil)
-	pp := NewPssParams(privkey)
+	pp := NewPssParams().WithPrivateKey(privkey)
 	data := []byte("foo")
 	datatwo := []byte("bar")
 	datathree := []byte("baz")
@@ -243,8 +232,11 @@ func TestAddressMatch(t *testing.T) {
 		t.Fatalf("Could not generate private key: %v", err)
 	}
 	privkey, err := w.GetPrivateKey(keys)
-	pssp := NewPssParams(privkey)
-	ps := NewPss(kad, pssp)
+	pssp := NewPssParams().WithPrivateKey(privkey)
+	ps, err := NewPss(kad, pssp)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 
 	pssmsg := &PssMsg{
 		To:      remoteaddr,
@@ -1352,11 +1344,14 @@ func newServices(allowRaw bool) adapters.Services {
 			defer cancel()
 			keys, err := wapi.NewKeyPair(ctxlocal)
 			privkey, err := w.GetPrivateKey(keys)
-			pssp := NewPssParams(privkey)
+			pssp := NewPssParams().WithPrivateKey(privkey)
 			pssp.MsgTTL = time.Second * 30
 			pssp.AllowRaw = allowRaw
 			pskad := kademlia(ctx.Config.ID)
-			ps := NewPss(pskad, pssp)
+			ps, err := NewPss(pskad, pssp)
+			if err != nil {
+				return nil, err
+			}
 
 			ping := &Ping{
 				OutC: make(chan bool),
@@ -1416,11 +1411,14 @@ func newTestPss(privkey *ecdsa.PrivateKey, overlay network.Overlay, ppextra *Pss
 	}
 
 	// create pss
-	pp := NewPssParams(privkey)
+	pp := NewPssParams().WithPrivateKey(privkey)
 	if ppextra != nil {
 		pp.SymKeyCacheCapacity = ppextra.SymKeyCacheCapacity
 	}
-	ps := NewPss(overlay, pp)
+	ps, err := NewPss(overlay, pp)
+	if err != nil {
+		return nil
+	}
 	ps.Start(nil)
 
 	return ps

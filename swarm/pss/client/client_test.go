@@ -24,11 +24,6 @@ import (
 	whisper "github.com/ethereum/go-ethereum/whisper/whisperv5"
 )
 
-const (
-	pssServiceName = "pss"
-	bzzServiceName = "bzz"
-)
-
 type protoCtrl struct {
 	C        chan bool
 	protocol *pss.Protocol
@@ -233,9 +228,12 @@ func newServices() adapters.Services {
 			defer cancel()
 			keys, err := wapi.NewKeyPair(ctxlocal)
 			privkey, err := w.GetPrivateKey(keys)
-			psparams := pss.NewPssParams(privkey)
+			psparams := pss.NewPssParams().WithPrivateKey(privkey)
 			pskad := kademlia(ctx.Config.ID)
-			ps := pss.NewPss(pskad, psparams)
+			ps, err := pss.NewPss(pskad, psparams)
+			if err != nil {
+				return nil, err
+			}
 			pshparams := pss.NewHandshakeParams()
 			pshparams.SymKeySendLimit = sendLimit
 			err = pss.SetHandshakeController(ps, pshparams)
