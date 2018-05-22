@@ -185,13 +185,15 @@ func NewPss(k network.Overlay, params *PssParams) (*Pss, error) {
 
 func (self *Pss) Start(srv *p2p.Server) error {
 	go func() {
+		ticker := time.NewTicker(defaultCleanInterval)
+		cacheTicker := time.NewTicker(self.cacheTTL)
+		defer ticker.Stop()
+		defer cacheTicker.Stop()
 		for {
-			tickC := time.Tick(defaultCleanInterval)
-			cacheTickC := time.Tick(self.cacheTTL)
 			select {
-			case <-cacheTickC:
+			case <-cacheTicker.C:
 				self.cleanFwdCache()
-			case <-tickC:
+			case <-ticker.C:
 				self.cleanKeys()
 			case <-self.quitC:
 				return
@@ -320,36 +322,37 @@ func (self *Pss) getHandlers(topic Topic) map[*Handler]bool {
 // Filters incoming messages for processing or forwarding.
 // Check if address partially matches
 // If yes, it CAN be for us, and we process it
-// Passes error to pss protocol handler if payload is not valid pssmsg
+// Only passes error to pss protocol handler if payload is not valid pssmsg
 func (self *Pss) handlePssMsg(msg interface{}) error {
 	pssmsg, ok := msg.(*PssMsg)
 
-	if ok {
-		if self.checkFwdCache(pssmsg) {
-			log.Trace(fmt.Sprintf("pss relay block-cache match (process): FROM %x TO %x", self.Overlay.BaseAddr(), common.ToHex(pssmsg.To)))
-			return nil
-		}
-		self.addFwdCache(pssmsg)
+	if !ok {
+		return fmt.Errorf("invalid message type. Expected *PssMsg, got %T ", msg)
+	}
+	if int64(pssmsg.Expire) < time.Now().Unix() {
+		log.Trace(fmt.Sprintf("pss filtered expired message FROM %x TO %x", self.Overlay.BaseAddr(), common.ToHex(pssmsg.To)))
+		return nil
+	}
+	if self.checkFwdCache(pssmsg) {
+		log.Trace(fmt.Sprintf("pss relay block-cache match (process): FROM %x TO %x", self.Overlay.BaseAddr(), common.ToHex(pssmsg.To)))
+		return nil
+	}
+	self.addFwdCache(pssmsg)
 
-		var err error
-		if !self.isSelfPossibleRecipient(pssmsg) {
-			log.Trace("pss was for someone else :'( ... forwarding", "pss", common.ToHex(self.BaseAddr()))
-			if err := self.enqueue(pssmsg); err != nil {
-				return err
-			}
-		}
-		log.Trace("pss for us, yay! ... let's process!", "pss", common.ToHex(self.BaseAddr()))
-
-		if err := self.process(pssmsg); err != nil {
-			qerr := self.enqueue(pssmsg)
-			if qerr != nil {
-				err = fmt.Errorf("%s + %s", err, qerr)
-			}
-		}
-		return err
+	if !self.isSelfPossibleRecipient(pssmsg) {
+		log.Trace("pss was for someone else :'( ... forwarding", "pss", common.ToHex(self.BaseAddr()))
+		return self.enqueue(pssmsg)
 	}
 
-	return fmt.Errorf("invalid message type. Expected *PssMsg, got %T ", msg)
+	log.Trace("pss for us, yay! ... let's process!", "pss", common.ToHex(self.BaseAddr()))
+	if err := self.process(pssmsg); err != nil {
+		qerr := self.enqueue(pssmsg)
+		if qerr != nil {
+			return fmt.Errorf("process fail: processerr %v, queueerr: %v", err, qerr)
+		}
+	}
+	return nil
+
 }
 
 // Entry point to processing a message for which the current node can be the intended recipient.
@@ -376,6 +379,7 @@ func (self *Pss) process(pssmsg *PssMsg) error {
 		asymmetric = true
 		keyFunc = self.processAsym
 	}
+
 	recvmsg, keyid, from, err = keyFunc(envelope)
 	if err != nil {
 		return errors.New("Decryption failed")

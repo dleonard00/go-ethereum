@@ -21,14 +21,41 @@ import (
 )
 
 const (
-	signatureLength     = 65
-	indexSize           = 18
-	DbDirName           = "resource"
-	chunkSize           = 4096 // temporary until we implement DPA in the resourcehandler
-	defaultStoreTimeout = 4000 * time.Millisecond
-	hasherCount         = 8
-	resourceHash        = SHA3Hash
+	signatureLength        = 65
+	indexSize              = 18
+	DbDirName              = "resource"
+	chunkSize              = 4096 // temporary until we implement DPA in the resourcehandler
+	defaultStoreTimeout    = 4000 * time.Millisecond
+	hasherCount            = 8
+	resourceHash           = SHA3Hash
+	defaultRetrieveTimeout = 100 * time.Millisecond
 )
+
+type blockEstimator struct {
+	Start   time.Time
+	Average time.Duration
+}
+
+// TODO: Average must  be adjusted when blockchain connection is present and synced
+func NewBlockEstimator() *blockEstimator {
+	sampleDate, _ := time.Parse(time.RFC3339, "2018-05-04T20:35:22Z")   // from etherscan.io
+	sampleBlock := int64(3169691)                                       // from etherscan.io
+	ropstenStart, _ := time.Parse(time.RFC3339, "2016-11-20T11:48:50Z") // from etherscan.io
+	ns := sampleDate.Sub(ropstenStart).Nanoseconds()
+	period := int(ns / sampleBlock)
+	parsestring := fmt.Sprintf("%dns", int(float64(period)*1.0005)) // increase the blockcount a little, so we don't overshoot the read block height; if we do, we will never find the updates when getting synced data
+	periodNs, _ := time.ParseDuration(parsestring)
+	return &blockEstimator{
+		Start:   ropstenStart,
+		Average: periodNs,
+	}
+}
+
+func (b *blockEstimator) HeaderByNumber(context.Context, string, *big.Int) (*types.Header, error) {
+	return &types.Header{
+		Number: big.NewInt(time.Since(b.Start).Nanoseconds() / b.Average.Nanoseconds()),
+	}, nil
+}
 
 type ResourceError struct {
 	code int
@@ -51,7 +78,7 @@ func NewResourceError(code int, s string) error {
 		err: s,
 	}
 	switch code {
-	case ErrNotFound, ErrIO, ErrUnauthorized, ErrInvalidValue, ErrDataOverflow, ErrNothingToReturn, ErrInvalidSignature, ErrNotSynced, ErrPeriodDepth:
+	case ErrNotFound, ErrIO, ErrUnauthorized, ErrInvalidValue, ErrDataOverflow, ErrNothingToReturn, ErrInvalidSignature, ErrNotSynced, ErrPeriodDepth, ErrCorruptData:
 		r.code = code
 	}
 	return r
@@ -144,7 +171,7 @@ type headerGetter interface {
 //
 // TODO: Include modtime in chunk data + signature
 type ResourceHandler struct {
-	chunkStore      ChunkStore
+	chunkStore      *NetStore
 	HashSize        int
 	signer          ResourceSigner
 	ethClient       headerGetter
@@ -196,7 +223,7 @@ func NewResourceHandler(params *ResourceHandlerParams) (*ResourceHandler, error)
 }
 
 // Sets the store backend for resource updates
-func (self *ResourceHandler) SetStore(store ChunkStore) {
+func (self *ResourceHandler) SetStore(store *NetStore) {
 	self.chunkStore = store
 }
 
@@ -217,6 +244,7 @@ func (self *ResourceHandler) Validate(key Key, data []byte) bool {
 	} else if signature == nil {
 		return bytes.Equal(self.resourceHash(period, version, ens.EnsNode(name)), key)
 	}
+
 	digest := self.keyDataHash(key, parseddata)
 	addr, err := getAddressFromDataSig(digest, *signature)
 	if err != nil {
@@ -416,8 +444,39 @@ func (self *ResourceHandler) LookupLatest(ctx context.Context, nameHash common.H
 	if err != nil {
 		return nil, err
 	}
-	nextperiod := getNextPeriod(rsrc.startBlock, currentblock, rsrc.frequency)
+	nextperiod, err := getNextPeriod(rsrc.startBlock, currentblock, rsrc.frequency)
+	if err != nil {
+		return nil, err
+	}
 	return self.lookup(rsrc, nextperiod, 0, refresh, maxLookup)
+}
+
+// Returns the resource before the one currently loaded in the resource object
+//
+// This is useful where resource updates are used incrementally in contrast to
+// merely replacing content.
+//
+// Requires a synced resource object
+func (self *ResourceHandler) LookupPreviousByName(ctx context.Context, name string, maxLookup *ResourceLookupParams) (*resource, error) {
+	return self.LookupPrevious(ctx, ens.EnsNode(name), name, maxLookup)
+}
+
+func (self *ResourceHandler) LookupPrevious(ctx context.Context, nameHash common.Hash, name string, maxLookup *ResourceLookupParams) (*resource, error) {
+	rsrc := self.getResource(name)
+	if !rsrc.isSynced() {
+		return nil, NewResourceError(ErrNotSynced, "LookupPrevious requires synced resource.")
+	} else if rsrc.lastPeriod == 0 {
+		return nil, NewResourceError(ErrNothingToReturn, "Resource not found")
+	}
+	if rsrc.version > 1 {
+		rsrc.version--
+	} else if rsrc.lastPeriod == 1 {
+		return nil, NewResourceError(ErrNothingToReturn, "Current update is the oldest")
+	} else {
+		rsrc.version = 0
+		rsrc.lastPeriod--
+	}
+	return self.lookup(rsrc, rsrc.lastPeriod, rsrc.version, false, maxLookup)
 }
 
 // base code for public lookup methods
@@ -444,12 +503,13 @@ func (self *ResourceHandler) lookup(rsrc *resource, period uint32, version uint3
 	if maxLookup == nil {
 		maxLookup = self.queryMaxPeriods
 	}
+	log.Trace("resource lookup", "period", period, "version", version, "limit", maxLookup.Limit, "max", maxLookup.Max)
 	for period > 0 {
 		if maxLookup.Limit && hops > maxLookup.Max {
 			return nil, NewResourceError(ErrPeriodDepth, fmt.Sprintf("Lookup exceeded max period hops (%d)", maxLookup.Max))
 		}
 		key := self.resourceHash(period, version, rsrc.nameHash)
-		chunk, err := self.chunkStore.Get(key)
+		chunk, err := self.chunkStore.get(key, defaultRetrieveTimeout)
 		if err == nil {
 			if specificversion {
 				return self.updateResourceIndex(rsrc, chunk)
@@ -459,13 +519,13 @@ func (self *ResourceHandler) lookup(rsrc *resource, period uint32, version uint3
 			for {
 				newversion := version + 1
 				key := self.resourceHash(period, newversion, rsrc.nameHash)
-				newchunk, err := self.chunkStore.Get(key)
+				newchunk, err := self.chunkStore.get(key, defaultRetrieveTimeout)
 				if err != nil {
 					return self.updateResourceIndex(rsrc, chunk)
 				}
-				log.Trace("version update found, checking next", "version", version, "period", period, "key", key)
 				chunk = newchunk
 				version = newversion
+				log.Trace("version update found, checking next", "version", version, "period", period, "key", key)
 			}
 		}
 		log.Trace("rsrc update not found, checking previous period", "period", period, "key", key)
@@ -495,7 +555,7 @@ func (self *ResourceHandler) loadResource(nameHash common.Hash, name string, ref
 		rsrc.nameHash = nameHash
 
 		// get the root info chunk and update the cached value
-		chunk, err := self.chunkStore.Get(Key(rsrc.nameHash[:]))
+		chunk, err := self.chunkStore.get(Key(rsrc.nameHash[:]), defaultRetrieveTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -557,15 +617,40 @@ func (self *ResourceHandler) parseUpdate(chunkdata []byte) (*Signature, uint32, 
 	headerlength := binary.LittleEndian.Uint16(chunkdata[cursor : cursor+2])
 	cursor += 2
 	datalength := binary.LittleEndian.Uint16(chunkdata[cursor : cursor+2])
-	exclsignlength := int(headerlength + datalength + 4)
+	cursor += 2
+	var exclsignlength int
+	// we need extra magic if it's a multihash
+	// TODO: merge with isMultihash code
+	if datalength == 0 {
+		uvarintbuf := bytes.NewBuffer(chunkdata[headerlength+4:])
+		r, err := binary.ReadUvarint(uvarintbuf)
+		if err != nil {
+			errstr := fmt.Sprintf("corrupt multihash, hash id varint could not be read: %v", err)
+			log.Warn(errstr)
+			return nil, 0, 0, "", nil, false, NewResourceError(ErrCorruptData, errstr)
+
+		}
+		r, err = binary.ReadUvarint(uvarintbuf)
+		if err != nil {
+			errstr := fmt.Sprintf("corrupt multihash, hash length field could not be read: %v", err)
+			log.Warn(errstr)
+			return nil, 0, 0, "", nil, false, NewResourceError(ErrCorruptData, errstr)
+
+		}
+		exclsignlength = int(headerlength + uint16(r))
+	} else {
+		exclsignlength = int(headerlength + datalength + 4)
+	}
+	exclsignlength = int(headerlength + datalength + 4)
 	if exclsignlength > len(chunkdata) || exclsignlength < 14 {
-		return nil, 0, 0, "", nil, false, NewResourceError(ErrNothingToReturn, fmt.Sprintf("Reported headerlength %d + datalength %d longer than actual chunk data length %d", headerlength, datalength, len(chunkdata)))
+		return nil, 0, 0, "", nil, false, NewResourceError(ErrNothingToReturn, fmt.Sprintf("Reported headerlength %d + datalength %d longer than actual chunk data length %d", headerlength, exclsignlength, len(chunkdata)))
+	} else if exclsignlength < 14 {
+		return nil, 0, 0, "", nil, false, NewResourceError(ErrNothingToReturn, fmt.Sprintf("Reported headerlength %d + datalength %d is smaller than minimum valid resource chunk length %d", headerlength, datalength, 14))
 	}
 	var period uint32
 	var version uint32
 	var name string
 	var data []byte
-	cursor += 2
 	period = binary.LittleEndian.Uint32(chunkdata[cursor : cursor+4])
 	cursor += 4
 	version = binary.LittleEndian.Uint32(chunkdata[cursor : cursor+4])
@@ -623,6 +708,9 @@ func (self *ResourceHandler) Update(ctx context.Context, name string, data []byt
 
 func (self *ResourceHandler) update(ctx context.Context, name string, data []byte, multihash bool) (Key, error) {
 
+	if len(data) == 0 {
+		return nil, NewResourceError(ErrInvalidValue, "I refuse to waste swarm space for updates with empty values, amigo (data length is 0)")
+	}
 	if self.chunkStore == nil {
 		return nil, NewResourceError(ErrInit, "Call ResourceHandler.SetStore() before updating")
 	}
@@ -651,7 +739,10 @@ func (self *ResourceHandler) update(ctx context.Context, name string, data []byt
 	if err != nil {
 		return nil, NewResourceError(ErrIO, fmt.Sprintf("Could not get block height: %v", err))
 	}
-	nextperiod := getNextPeriod(rsrc.startBlock, currentblock, rsrc.frequency)
+	nextperiod, err := getNextPeriod(rsrc.startBlock, currentblock, rsrc.frequency)
+	if err != nil {
+		return nil, err
+	}
 
 	// if we already have an update for this block then increment version
 	// (resource object MUST be in sync for version to be correct)
@@ -701,6 +792,9 @@ func (self *ResourceHandler) update(ctx context.Context, name string, data []byt
 	timeout := time.NewTimer(self.storeTimeout)
 	select {
 	case <-chunk.dbStoredC:
+		if err := chunk.GetErrored(); err != nil {
+			return nil, NewResourceError(ErrIO, fmt.Sprintf("chunk not stored: %v", err))
+		}
 	case <-timeout.C:
 		return nil, NewResourceError(ErrIO, "chunk store timeout")
 	}
@@ -729,7 +823,7 @@ func (self *ResourceHandler) getBlock(ctx context.Context, name string) (uint64,
 }
 
 // Calculate the period index (aka major version number) from a given block number
-func (self *ResourceHandler) BlockToPeriod(name string, blocknumber uint64) uint32 {
+func (self *ResourceHandler) BlockToPeriod(name string, blocknumber uint64) (uint32, error) {
 	return getNextPeriod(self.resources[name].startBlock, blocknumber, self.resources[name].frequency)
 }
 
@@ -827,10 +921,13 @@ func newUpdateChunk(key Key, signature *Signature, period uint32, version uint32
 	return chunk
 }
 
-func getNextPeriod(start uint64, current uint64, frequency uint64) uint32 {
+func getNextPeriod(start uint64, current uint64, frequency uint64) (uint32, error) {
+	if current < start {
+		return 0, NewResourceError(ErrInvalidValue, fmt.Sprintf("given current block value %d < start block %d", current, start))
+	}
 	blockdiff := current - start
 	period := blockdiff / frequency
-	return uint32(period + 1)
+	return uint32(period + 1), nil
 }
 
 func ToSafeName(name string) (string, error) {
@@ -879,15 +976,16 @@ func NewTestResourceHandler(datadir string, params *ResourceHandlerParams) (*Res
 	path := filepath.Join(datadir, DbDirName)
 	rh, err := NewResourceHandler(params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resource handler create fail: %v", err)
 	}
 	localstoreparams := NewDefaultLocalStoreParams()
 	localstoreparams.Init(path)
 	localStore, err := NewLocalStore(localstoreparams, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("localstore create fail, path %s: %v", path, err)
 	}
 	localStore.Validators = append(localStore.Validators, rh)
-	rh.SetStore(localStore)
+	dpaStore := NewNetStore(localStore, nil)
+	rh.SetStore(dpaStore)
 	return rh, nil
 }

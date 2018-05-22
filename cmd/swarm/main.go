@@ -87,10 +87,6 @@ var (
 		Usage:  "Network identifier (integer, default 3=swarm testnet)",
 		EnvVar: SWARM_ENV_NETWORK_ID,
 	}
-	SwarmConfigPathFlag = cli.StringFlag{
-		Name:  "bzzconfig",
-		Usage: "DEPRECATED: please use --config path/to/TOML-file",
-	}
 	SwarmSwapEnabledFlag = cli.BoolFlag{
 		Name:   "swap",
 		Usage:  "Swarm SWAP enabled (default false)",
@@ -111,6 +107,11 @@ var (
 		Usage:  "Duration for sync subscriptions update after no new peers are added (default 15s)",
 		EnvVar: SWARM_ENV_SYNC_UPDATE_DELAY,
 	}
+	SwarmDeliverySkipCheckFlag = cli.BoolFlag{
+		Name:   "delivery-skip-check",
+		Usage:  "Skip chunk delivery check (default false)",
+		EnvVar: SWARM_ENV_DELIVERY_SKIP_CHECK,
+	}
 	EnsAPIFlag = cli.StringSliceFlag{
 		Name:   "ens-api",
 		Usage:  "ENS API endpoint for a TLD and with contract address, can be repeated, format [tld:][contract-addr@]url",
@@ -121,7 +122,7 @@ var (
 		Usage: "Swarm HTTP endpoint",
 		Value: "http://127.0.0.1:8500",
 	}
-	SwarmRecursiveUploadFlag = cli.BoolFlag{
+	SwarmRecursiveFlag = cli.BoolFlag{
 		Name:  "recursive",
 		Usage: "Upload directories recursively",
 	}
@@ -142,7 +143,7 @@ var (
 		Usage: "force mime type",
 	}
 	SwarmEncryptedFlag = cli.BoolFlag{
-		Name:  "encrypted",
+		Name:  "encrypt",
 		Usage: "use encrypted upload",
 	}
 	CorsStringFlag = cli.StringFlag{
@@ -164,16 +165,6 @@ var (
 		Name:   "store.cache.size",
 		Usage:  "Number of recent chunks cached in memory (default 5000)",
 		EnvVar: SWARM_ENV_STORE_CACHE_CAPACITY,
-	}
-
-	// the following flags are deprecated and should be removed in the future
-	DeprecatedEthAPIFlag = cli.StringFlag{
-		Name:  "ethapi",
-		Usage: "DEPRECATED: please use --ens-api and --swap-api",
-	}
-	DeprecatedEnsAddrFlag = cli.StringFlag{
-		Name:  "ens-addr",
-		Usage: "DEPRECATED: ENS contract address, please use --ens-api with contract address according to its format",
 	}
 )
 
@@ -240,6 +231,17 @@ Lists files and directories contained in a manifest.
 Prints the swarm hash of file or directory.
 `,
 		},
+		{
+			Action:    download,
+			Name:      "down",
+			Flags:     []cli.Flag{SwarmRecursiveFlag},
+			Usage:     "downloads a swarm manifest or a file inside a manifest",
+			ArgsUsage: " <uri> [<dir>]",
+			Description: `
+Downloads a swarm bzz uri to the given dir. When no dir is provided, working directory is assumed. --recursive flag is expected when downloading a manifest with multiple entries.
+`,
+		},
+
 		{
 			Name:      "manifest",
 			Usage:     "update a MANIFEST",
@@ -353,11 +355,11 @@ Remove corrupt entries from a local chunk database.
 		CorsStringFlag,
 		EnsAPIFlag,
 		SwarmTomlConfigPathFlag,
-		SwarmConfigPathFlag,
 		SwarmSwapEnabledFlag,
 		SwarmSwapAPIFlag,
 		SwarmSyncDisabledFlag,
 		SwarmSyncUpdateDelay,
+		SwarmDeliverySkipCheckFlag,
 		SwarmListenAddrFlag,
 		SwarmPortFlag,
 		SwarmAccountFlag,
@@ -365,7 +367,7 @@ Remove corrupt entries from a local chunk database.
 		ChequebookAddrFlag,
 		// upload flags
 		SwarmApiFlag,
-		SwarmRecursiveUploadFlag,
+		SwarmRecursiveFlag,
 		SwarmWantManifestFlag,
 		SwarmUploadDefaultPath,
 		SwarmUpFromStdinFlag,
@@ -374,9 +376,6 @@ Remove corrupt entries from a local chunk database.
 		SwarmStorePath,
 		SwarmStoreCapacity,
 		SwarmStoreCacheCapacity,
-		//deprecated flags
-		DeprecatedEthAPIFlag,
-		DeprecatedEnsAddrFlag,
 	}
 	rpcFlags := []cli.Flag{
 		utils.WSEnabledFlag,

@@ -41,11 +41,6 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/opt"
 )
 
-//metrics variables
-var (
-	dbStoreDeleteCounter = metrics.NewRegisteredCounter("storage.db.dbstore.rm.count", nil)
-)
-
 const (
 	gcArrayFreeRatio = 0.1
 	maxGCitems       = 5000 // max number of items to be gc'd per call to collectGarbage()
@@ -248,6 +243,8 @@ func decodeOldData(data []byte, chunk *Chunk) {
 }
 
 func (s *LDBStore) collectGarbage(ratio float32) {
+	metrics.GetOrRegisterCounter("ldbstore.collectgarbage", nil).Inc(1)
+
 	it := s.db.NewIterator()
 	defer it.Release()
 
@@ -287,6 +284,8 @@ func (s *LDBStore) collectGarbage(ratio float32) {
 	sort.Slice(garbage[:gcnt], func(i, j int) bool { return garbage[i].value < garbage[j].value })
 
 	cutoff := int(float32(gcnt) * ratio)
+	metrics.GetOrRegisterCounter("ldbstore.collectgarbage.delete", nil).Inc(int64(cutoff))
+
 	for i := 0; i < cutoff; i++ {
 		s.delete(garbage[i].idx, garbage[i].idxKey, garbage[i].po)
 	}
@@ -464,10 +463,11 @@ func (s *LDBStore) ReIndex() {
 }
 
 func (s *LDBStore) delete(idx uint64, idxKey []byte, po uint8) {
+	metrics.GetOrRegisterCounter("ldbstore.delete", nil).Inc(1)
+
 	batch := new(leveldb.Batch)
 	batch.Delete(idxKey)
 	batch.Delete(getDataKey(idx, po))
-	dbStoreDeleteCounter.Inc(1)
 	s.entryCnt--
 	s.bucketCnt[po]--
 	cntKey := make([]byte, 2)
@@ -498,7 +498,9 @@ func (s *LDBStore) CurrentStorageIndex() uint64 {
 }
 
 func (s *LDBStore) Put(chunk *Chunk) {
+	metrics.GetOrRegisterCounter("ldbstore.put", nil).Inc(1)
 	log.Trace("ldbstore.put", "key", chunk.Key)
+
 	ikey := getIndexKey(chunk.Key)
 	var index dpaDBIndex
 
@@ -609,11 +611,17 @@ func (s *LDBStore) tryAccessIdx(ikey []byte, index *dpaDBIndex) bool {
 	index.Access = s.accessCnt
 	idata = encodeIndex(index)
 	s.batch.Put(ikey, idata)
+	select {
+	case s.batchesC <- struct{}{}:
+	default:
+	}
 	return true
 }
 
 func (s *LDBStore) Get(key Key) (chunk *Chunk, err error) {
+	metrics.GetOrRegisterCounter("ldbstore.get", nil).Inc(1)
 	log.Trace("ldbstore.get", "key", key)
+
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.get(key)
@@ -679,7 +687,6 @@ func (s *LDBStore) updateAccessCnt(key Key) {
 }
 
 func (s *LDBStore) setCapacity(c uint64) {
-
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -705,12 +712,16 @@ func (s *LDBStore) Close() {
 
 // SyncIterator(start, stop, po, f) calls f on each hash of a bin po from start to stop
 func (s *LDBStore) SyncIterator(since uint64, until uint64, po uint8, f func(Key, uint64) bool) error {
+	metrics.GetOrRegisterCounter("ldbstore.synciterator", nil).Inc(1)
+
 	sincekey := getDataKey(since, po)
 	untilkey := getDataKey(until, po)
 	it := s.db.NewIterator()
 	defer it.Release()
 
 	for ok := it.Seek(sincekey); ok; ok = it.Next() {
+		metrics.GetOrRegisterCounter("ldbstore.synciterator.seek", nil).Inc(1)
+
 		dbkey := it.Key()
 		if dbkey[0] != keyData || dbkey[1] != po || bytes.Compare(untilkey, dbkey) < 0 {
 			break

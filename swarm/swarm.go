@@ -175,30 +175,45 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, config *api.
 		return
 	}
 
-	var resourceHandler *storage.ResourceHandler
-	// if use resource updates
+	db := storage.NewDBAPI(self.lstore)
+	delivery := stream.NewDelivery(to, db)
 
+	self.streamer = stream.NewRegistry(addr, delivery, db, stateStore, &stream.RegistryOptions{
+		SkipCheck:       config.DeliverySkipCheck,
+		DoSync:          config.SyncEnabled,
+		DoRetrieve:      true,
+		SyncUpdateDelay: config.SyncUpdateDelay,
+	})
+
+	// set up DPA, the cloud storage local access layer
+	dpaChunkStore := storage.NewNetStore(self.lstore, self.streamer.Retrieve)
+	// Swarm Hash Merklised Chunking for Arbitrary-length Document/File storage
+	self.dpa = storage.NewDPA(dpaChunkStore, self.config.DPAParams)
+
+	var resourceHandler *storage.ResourceHandler
+	rhparams := &storage.ResourceHandlerParams{
+		// TODO: config parameter to set limits
+		QueryMaxPeriods: &storage.ResourceLookupParams{
+			Limit: false,
+		},
+		Signer: &storage.GenericResourceSigner{
+			PrivKey: self.privateKey,
+		},
+		EthClient: resolver,
+		EnsClient: ensresolver,
+	}
 	if resolver != nil {
 		resolver.SetNameHash(ens.EnsNode)
-		rhparams := &storage.ResourceHandlerParams{
-			// TODO: config parameter to set limits
-			QueryMaxPeriods: &storage.ResourceLookupParams{
-				Limit: false,
-			},
-			Signer: &storage.GenericResourceSigner{
-				PrivKey: self.privateKey,
-			},
-			EthClient: resolver,
-			EnsClient: ensresolver,
-		}
-		resourceHandler, err = storage.NewResourceHandler(rhparams)
-		if err != nil {
-			return nil, err
-		}
-		resourceHandler.SetStore(self.lstore)
 	} else {
-		log.Warn("No ENS API specified, resource updates will be disabled")
+		log.Warn("No ETH API specified, resource updates will use block height approximation")
+		// TODO: blockestimator should use saved values derived from last time ethclient was connected
+		rhparams.EthClient = storage.NewBlockEstimator()
 	}
+	resourceHandler, err = storage.NewResourceHandler(rhparams)
+	if err != nil {
+		return nil, err
+	}
+	resourceHandler.SetStore(dpaChunkStore)
 
 	var validators []storage.ChunkValidator
 	validators = append(validators, storage.NewContentAddressValidator(storage.MakeHashFunc(storage.DefaultHash)))
@@ -209,22 +224,6 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, config *api.
 
 	// setup local store
 	log.Debug(fmt.Sprintf("Set up local storage"))
-
-	db := storage.NewDBAPI(self.lstore)
-	delivery := stream.NewDelivery(to, db)
-
-	self.streamer = stream.NewRegistry(addr, delivery, db, stateStore, &stream.RegistryOptions{
-		DoSync:          true,
-		DoRetrieve:      true,
-		SyncUpdateDelay: config.SyncUpdateDelay,
-	})
-
-	// set up DPA, the cloud storage local access layer
-	dpaChunkStore := storage.NewNetStore(self.lstore, self.streamer.Retrieve)
-	log.Debug(fmt.Sprintf("-> Local Access to Swarm"))
-	// Swarm Hash Merklised Chunking for Arbitrary-length Document/File storage
-	self.dpa = storage.NewDPA(dpaChunkStore, self.config.DPAParams)
-	log.Debug(fmt.Sprintf("-> Content Store API"))
 
 	self.bzz = network.NewBzz(bzzconfig, to, stateStore, stream.Spec, self.streamer.Run)
 

@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/swarm/api"
@@ -394,9 +395,9 @@ func (s *Server) HandlePostResource(w http.ResponseWriter, r *Request) {
 	isRaw, frequency, err := resourcePostMode(r.uri.Path)
 	if err != nil {
 		Respond(w, r, err.Error(), http.StatusBadRequest)
+		return
 	}
 	if frequency > 0 {
-
 		key, err := s.api.ResourceCreate(r.Context(), r.uri.Addr, frequency)
 		if err != nil {
 			code, err2 := s.translateResourceError(w, r, "resource creation fail", err)
@@ -419,6 +420,12 @@ func (s *Server) HandlePostResource(w http.ResponseWriter, r *Request) {
 			Respond(w, r, fmt.Sprintf("failed to create json response: %s", err), http.StatusInternalServerError)
 			return
 		}
+	} else {
+		_, _, err := s.api.ResourceLookup(r.Context(), r.uri.Addr, 0, 0, &storage.ResourceLookupParams{})
+		if err != nil {
+			Respond(w, r, err.Error(), http.StatusNotFound)
+			return
+		}
 	}
 
 	data, err := ioutil.ReadAll(r.Body)
@@ -429,11 +436,17 @@ func (s *Server) HandlePostResource(w http.ResponseWriter, r *Request) {
 	if isRaw {
 		_, _, _, err = s.api.ResourceUpdate(r.Context(), r.uri.Addr, data)
 	} else {
-		_, _, _, err = s.api.ResourceUpdateMultihash(r.Context(), r.uri.Addr, data)
+		bytesdata, err := hexutil.Decode(string(data))
+		if err != nil {
+			Respond(w, r, err.Error(), http.StatusBadRequest)
+		}
+		_, _, _, err = s.api.ResourceUpdateMultihash(r.Context(), r.uri.Addr, bytesdata)
+		if err != nil {
+			Respond(w, r, err.Error(), http.StatusBadRequest)
+		}
 	}
 	if err != nil {
 		code, err2 := s.translateResourceError(w, r, "mutable resource update fail", err)
-
 		Respond(w, r, err2.Error(), code)
 		return
 	}
@@ -533,12 +546,19 @@ func (s *Server) translateResourceError(w http.ResponseWriter, r *Request, supEr
 func (s *Server) HandleGet(w http.ResponseWriter, r *Request) {
 	log.Debug("handle.get", "ruid", r.ruid, "uri", r.uri)
 	getCount.Inc(1)
-	key, err := s.api.Resolve(r.uri)
-	if err != nil {
-		getFail.Inc(1)
-		Respond(w, r, fmt.Sprintf("cannot resolve %s: %s", r.uri.Addr, err), http.StatusNotFound)
-		return
+	var err error
+	key := r.uri.Key()
+	if key == nil {
+		key, err = s.api.Resolve(r.uri)
+		if err != nil {
+			getFail.Inc(1)
+			Respond(w, r, fmt.Sprintf("cannot resolve %s: %s", r.uri.Addr, err), http.StatusNotFound)
+			return
+		}
+	} else {
+		w.Header().Set("Cache-Control", "max-age=2147483648, immutable") // url was of type bzz://<hex key>/path, so we are sure it is immutable.
 	}
+
 	log.Debug("handle.get: resolved", "ruid", r.ruid, "key", key)
 
 	// if path is set, interpret <key> as a manifest and return the
@@ -580,6 +600,15 @@ func (s *Server) HandleGet(w http.ResponseWriter, r *Request) {
 			return
 		}
 		key = storage.Key(common.Hex2Bytes(entry.Hash))
+	}
+	etag := common.Bytes2Hex(key)
+	noneMatchEtag := r.Header.Get("If-None-Match")
+	w.Header().Set("ETag", etag) // set etag to manifest key or raw entry key.
+	if noneMatchEtag != "" {
+		if bytes.Equal(storage.Key(common.Hex2Bytes(noneMatchEtag)), key) {
+			Respond(w, r, "Not Modified", http.StatusNotModified)
+			return
+		}
 	}
 
 	// check the root chunk exists by retrieving the file's size
@@ -802,16 +831,33 @@ func (s *Server) HandleGetFile(w http.ResponseWriter, r *Request) {
 		http.Redirect(w, &r.Request, r.URL.Path+"/", http.StatusMovedPermanently)
 		return
 	}
+	var err error
+	manifestKey := r.uri.Key()
 
-	key, err := s.api.Resolve(r.uri)
-	if err != nil {
-		getFileFail.Inc(1)
-		Respond(w, r, fmt.Sprintf("cannot resolve %s: %s", r.uri.Addr, err), http.StatusNotFound)
-		return
+	if manifestKey == nil {
+		manifestKey, err = s.api.Resolve(r.uri)
+		if err != nil {
+			getFileFail.Inc(1)
+			Respond(w, r, fmt.Sprintf("cannot resolve %s: %s", r.uri.Addr, err), http.StatusNotFound)
+			return
+		}
+	} else {
+		w.Header().Set("Cache-Control", "max-age=2147483648, immutable") // url was of type bzz://<hex key>/path, so we are sure it is immutable.
 	}
-	log.Debug("handle.get.file: resolved", "ruid", r.ruid, "key", key)
 
-	reader, contentType, status, err := s.api.Get(key, r.uri.Path)
+	log.Debug("handle.get.file: resolved", "ruid", r.ruid, "key", manifestKey)
+
+	reader, contentType, status, contentKey, err := s.api.Get(manifestKey, r.uri.Path)
+
+	etag := common.Bytes2Hex(contentKey)
+	noneMatchEtag := r.Header.Get("If-None-Match")
+	w.Header().Set("ETag", etag) // set etag to actual content key.
+	if noneMatchEtag != "" {
+		if bytes.Equal(storage.Key(common.Hex2Bytes(noneMatchEtag)), contentKey) {
+			Respond(w, r, "Not Modified", http.StatusNotModified)
+			return
+		}
+	}
 
 	if err != nil {
 		// cheeky, cheeky hack. See swarm/api/api.go:Api.Get() for an explanation
@@ -834,7 +880,7 @@ func (s *Server) HandleGetFile(w http.ResponseWriter, r *Request) {
 	//the request results in ambiguous files
 	//e.g. /read with readme.md and readinglist.txt available in manifest
 	if status == http.StatusMultipleChoices {
-		list, err := s.getManifestList(key, r.uri.Path)
+		list, err := s.getManifestList(manifestKey, r.uri.Path)
 
 		if err != nil {
 			getFileFail.Inc(1)
@@ -856,11 +902,11 @@ func (s *Server) HandleGetFile(w http.ResponseWriter, r *Request) {
 	}
 
 	w.Header().Set("Content-Type", contentType)
-
 	http.ServeContent(w, &r.Request, "", time.Now(), reader)
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	defer metrics.GetOrRegisterResettingTimer(fmt.Sprintf("http.request.%s.time", r.Method), nil).UpdateSince(time.Now())
 	req := &Request{Request: *r, ruid: uuid.New()[:8]}
 	metrics.GetOrRegisterCounter(fmt.Sprintf("http.request.%s", r.Method), nil).Inc(1)
 	log.Info("serving request", "ruid", req.ruid, "method", r.Method, "url", r.RequestURI)
@@ -908,6 +954,9 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		} else if uri.Resource() {
 			log.Debug("handlePostResource")
 			s.HandlePostResource(w, req)
+		} else if uri.Immutable() || uri.List() || uri.Hash() {
+			log.Debug("POST not allowed on immutable, list or hash")
+			Respond(w, req, fmt.Sprintf("POST method on scheme %s not allowed", uri.Scheme), http.StatusMethodNotAllowed)
 		} else {
 			log.Debug("handlePostFiles")
 			s.HandlePostFiles(w, req)

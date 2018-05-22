@@ -26,7 +26,7 @@ var (
 	// NetStore.Get timeout for get and get retries
 	// This is the maximum period that the Get will block.
 	// If it is reached, Get will return ErrChunkNotFound.
-	netStoreRetryTimeout = 60 * time.Second
+	netStoreRetryTimeout = 30 * time.Second
 	// Minimal period between calling get method on NetStore
 	// on retry. It protects calling get very frequently if
 	// it returns ErrChunkNotFound very fast.
@@ -84,7 +84,7 @@ func (self *NetStore) Get(key Key) (chunk *Chunk, err error) {
 		defer limiter.Stop()
 
 		for {
-			chunk, err := self.get(key)
+			chunk, err := self.get(key, 0)
 			if err != ErrChunkNotFound {
 				// break retry only if the error is nil
 				// or other error then ErrChunkNotFound
@@ -121,7 +121,10 @@ func (self *NetStore) Get(key Key) (chunk *Chunk, err error) {
 	}
 }
 
-func (self *NetStore) get(key Key) (chunk *Chunk, err error) {
+func (self *NetStore) get(key Key, timeout time.Duration) (chunk *Chunk, err error) {
+	if timeout == 0 {
+		timeout = searchTimeout
+	}
 	if self.retrieve == nil {
 		chunk, err = self.localStore.Get(key)
 		if err == nil {
@@ -148,7 +151,7 @@ func (self *NetStore) get(key Key) (chunk *Chunk, err error) {
 		}
 	}
 
-	t := time.NewTicker(searchTimeout)
+	t := time.NewTicker(timeout)
 	defer t.Stop()
 
 	select {
