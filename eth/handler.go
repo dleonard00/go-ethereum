@@ -746,11 +746,11 @@ func (pm *ProtocolManager) minedBroadcastLoop() {
 func (pm *ProtocolManager) txBroadcastLoop() {
 	for {
 		select {
-		case event := <-pm.txsCh:
-			pm.BroadcastTxs(event.Txs)
+		case event := <-pm.txCh:
+			pm.BroadcastTx(event.Tx.Hash(), event.Tx)
 
 		// Err() channel will be closed when unsubscribing.
-		case <-pm.txsSub.Err():
+		case <-pm.txSub.Err():
 			return
 		}
 	}
