@@ -147,15 +147,16 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 
 	// set up high level api
 	var resolver *api.MultiResolver
+	var ensClient *ensClient
 	if len(config.EnsAPIs) > 0 {
 		opts := []api.MultiResolverOption{}
 		for _, c := range config.EnsAPIs {
 			tld, endpoint, addr := parseEnsAPIAddress(c)
-			r, err := newEnsClient(endpoint, addr, config, self.privateKey)
+			ensClient, err = newEnsClient(endpoint, addr, config, self.privateKey)
 			if err != nil {
 				return nil, err
 			}
-			opts = append(opts, api.MultiResolverOptionWithResolver(r, tld))
+			opts = append(opts, api.MultiResolverOptionWithResolver(ensClient, tld))
 
 		}
 		resolver = api.NewMultiResolver(opts...)
@@ -224,7 +225,14 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 	self.bzz = network.NewBzz(bzzconfig, to, stateStore, stream.Spec, self.streamer.Run)
 
 	// Pss = postal service over swarm (devp2p over bzz)
-	self.ps, err = pss.NewPss(to, config.Pss)
+	var pssEnsClient *pss.EnsClient
+	if ensClient != nil {
+		pssEnsClient = &pss.EnsClient{
+			Client:  ensClient.Client,
+			EnsRoot: ensClient.EnsRoot,
+		}
+	}
+	self.ps, err = pss.NewPss(to, config.Pss, pssEnsClient)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +280,7 @@ func parseEnsAPIAddress(s string) (tld, endpoint string, addr common.Address) {
 type ensClient struct {
 	*ens.ENS
 	*ethclient.Client
+	EnsRoot common.Address
 }
 
 // newEnsClient creates a new ENS client for that is a consumer of
@@ -305,6 +314,7 @@ func newEnsClient(endpoint string, addr common.Address, config *api.Config, priv
 	return &ensClient{
 		ENS:    dns,
 		Client: ethClient,
+		EnsRoot: ensRoot,
 	}, err
 }
 
@@ -379,7 +389,12 @@ func (self *Swarm) Start(srv *p2p.Server) error {
 	log.Info(fmt.Sprintf("Swarm network started on bzz address: %x", self.bzz.Hive.Overlay.BaseAddr()))
 
 	if self.ps != nil {
-		self.ps.Start(srv)
+		err = self.ps.Start(srv)
+		if err != nil {
+			log.Error("pss failed", "err", err)
+			return err
+		}
+
 		log.Info("Pss started")
 	}
 

@@ -104,7 +104,7 @@ func (pssapi *API) GetPublicKey() (keybytes hexutil.Bytes) {
 func (pssapi *API) SetPeerPublicKey(pubkey hexutil.Bytes, topic Topic, addr PssAddress) error {
 	err := pssapi.Pss.SetPeerPublicKey(crypto.ToECDSAPub(pubkey), topic, &addr)
 	if err != nil {
-		return fmt.Errorf("Invalid key: %x", pubkey)
+		return fmt.Errorf("Failed to add peer: %s", err)
 	}
 	return nil
 }

@@ -233,7 +233,7 @@ func TestAddressMatch(t *testing.T) {
 	}
 	privkey, err := w.GetPrivateKey(keys)
 	pssp := NewPssParams().WithPrivateKey(privkey)
-	ps, err := NewPss(kad, pssp)
+	ps, err := NewPss(kad, pssp, nil)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
@@ -1528,7 +1528,7 @@ func newServices(allowRaw bool) adapters.Services {
 			pssp.MsgTTL = time.Second * 30
 			pssp.AllowRaw = allowRaw
 			pskad := kademlia(ctx.Config.ID)
-			ps, err := NewPss(pskad, pssp)
+			ps, err := NewPss(pskad, pssp, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -1595,7 +1595,7 @@ func newTestPss(privkey *ecdsa.PrivateKey, overlay network.Overlay, ppextra *Pss
 	if ppextra != nil {
 		pp.SymKeyCacheCapacity = ppextra.SymKeyCacheCapacity
 	}
-	ps, err := NewPss(overlay, pp)
+	ps, err := NewPss(overlay, pp, nil)
 	if err != nil {
 		return nil
 	}

@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/contracts/ens"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -85,7 +84,7 @@ func NewConfig() (self *Config) {
 		Port:              DefaultHTTPPort,
 		Path:              node.DefaultDataDir(),
 		EnsAPIs:           nil,
-		EnsRoot:           ens.TestNetAddress,
+		EnsRoot:           common.Address{},
 		NetworkId:         network.DefaultNetworkID,
 		SwapEnabled:       false,
 		SyncEnabled:       true,
