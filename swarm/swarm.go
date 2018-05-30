@@ -222,7 +222,13 @@ func NewSwarm(config *api.Config, mockStore *mock.NodeStore) (self *Swarm, err e
 	// setup local store
 	log.Debug(fmt.Sprintf("Set up local storage"))
 
-	self.bzz = network.NewBzz(bzzconfig, to, stateStore, stream.Spec, self.streamer.Run)
+	// Disable streamer running if sync not enabled
+	var streamerRun func(*network.BzzPeer) error
+	if config.SyncEnabled {
+		streamerRun = self.streamer.Run
+	}
+
+	self.bzz = network.NewBzz(bzzconfig, to, stateStore, stream.Spec, streamerRun)
 
 	// Pss = postal service over swarm (devp2p over bzz)
 	var pssEnsClient *pss.EnsClient
