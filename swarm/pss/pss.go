@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/contracts/stake"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discover"
@@ -74,6 +76,11 @@ type PssParams struct {
 	AllowRaw            bool // If true, enables sending and receiving messages without builtin pss encryption
 }
 
+type EnsClient struct {
+	*ethclient.Client
+	EnsRoot common.Address
+}
+
 // Sane defaults for Pss
 func NewPssParams() *PssParams {
 	return &PssParams{
@@ -95,6 +102,7 @@ type Pss struct {
 	network.Overlay                   // we can get the overlayaddress from this
 	privateKey      *ecdsa.PrivateKey // pss can have it's own independent key
 	w               *whisper.Whisper  // key and encryption backend
+	ensClient       *EnsClient        // ENS & contracts interface
 	auxAPIs         []rpc.API         // builtins (handshake, test) can add APIs
 
 	// sending and forwarding
@@ -135,7 +143,7 @@ func (self *Pss) String() string {
 //
 // In addition to params, it takes a swarm network overlay
 // and a DPA storage for message cache storage.
-func NewPss(k network.Overlay, params *PssParams) (*Pss, error) {
+func NewPss(k network.Overlay, params *PssParams, ensClient *EnsClient) (*Pss, error) {
 	if params.privateKey == nil {
 		return nil, errors.New("missing private key for pss")
 	}
@@ -147,6 +155,7 @@ func NewPss(k network.Overlay, params *PssParams) (*Pss, error) {
 		Overlay:    k,
 		privateKey: params.privateKey,
 		w:          whisper.New(&whisper.DefaultConfig),
+		ensClient:  ensClient,
 		quitC:      make(chan struct{}),
 
 		fwdPool:         make(map[string]*protocols.Peer),
@@ -179,11 +188,30 @@ func NewPss(k network.Overlay, params *PssParams) (*Pss, error) {
 	return ps, nil
 }
 
+func (self *Pss) checkStaked(pubkey ecdsa.PublicKey) (bool, error) {
+	address := crypto.PubkeyToAddress(pubkey)
+	return stake.HasStakeENS(self.ensClient, self.ensClient.EnsRoot, address)
+}
+
 /////////////////////////////////////////////////////////////////////
 // SECTION: node.Service interface
 /////////////////////////////////////////////////////////////////////
 
 func (self *Pss) Start(srv *p2p.Server) error {
+	if self.ensClient != nil {
+		staked, err := self.checkStaked(self.privateKey.PublicKey)
+
+		if err != nil {
+			return fmt.Errorf("Failed to check own stake: %s", err)
+		}
+
+		if !staked {
+			return fmt.Errorf("No stake found for own address: %s", crypto.PubkeyToAddress(self.privateKey.PublicKey).String())
+		}
+
+		log.Debug("Stake found for self", "address", crypto.PubkeyToAddress(self.privateKey.PublicKey))
+	}
+
 	go func() {
 		ticker := time.NewTicker(defaultCleanInterval)
 		cacheTicker := time.NewTicker(self.cacheTTL)
@@ -435,6 +463,21 @@ func (self *Pss) SetPeerPublicKey(pubkey *ecdsa.PublicKey, topic Topic, address 
 	if len(pubkeybytes) == 0 {
 		return fmt.Errorf("invalid public key: %v", pubkey)
 	}
+
+	if self.ensClient != nil {
+		staked, err := self.checkStaked(*pubkey)
+
+		if err != nil {
+			return fmt.Errorf("Failed to check stake for address %s: %s", crypto.PubkeyToAddress(*pubkey).String(), err)
+		}
+
+		if !staked {
+			return fmt.Errorf("No stake found for address: %s", crypto.PubkeyToAddress(*pubkey).String())
+		}
+
+		log.Debug("Stake found for peer", "address", crypto.PubkeyToAddress(*pubkey))
+	}
+
 	pubkeyid := common.ToHex(pubkeybytes)
 	psp := &pssPeer{
 		address: address,

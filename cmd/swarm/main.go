@@ -492,6 +492,10 @@ func registerBzzService(bzzconfig *bzzapi.Config, ctx *cli.Context, stack *node.
 			}
 		}
 
+		if bzzconfig.EnsAPIs == nil {
+			utils.Fatalf("ENS API must be configured")
+		}
+
 		// In production, mockStore must be always nil.
 		return swarm.NewSwarm(ctx, swapClient, bzzconfig, nil)
 	}

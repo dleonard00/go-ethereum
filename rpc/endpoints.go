@@ -17,6 +17,7 @@
 package rpc
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -66,7 +67,7 @@ func StartWSEndpoint(endpoint string, apis []API, modules []string, wsOrigins []
 			if err := handler.RegisterName(api.Namespace, api.Service); err != nil {
 				return nil, nil, err
 			}
-			log.Debug("WebSocket registered", "service", api.Service, "namespace", api.Namespace)
+			log.Debug("WebSocket registered", "service", fmt.Sprintf("%T", api.Service), "namespace", api.Namespace)
 		}
 	}
 	// All APIs registered, start the HTTP listener

@@ -240,7 +240,7 @@ func newServices() adapters.Services {
 			privkey, err := w.GetPrivateKey(keys)
 			psparams := pss.NewPssParams().WithPrivateKey(privkey)
 			pskad := kademlia(ctx.Config.ID)
-			ps, err := pss.NewPss(pskad, psparams)
+			ps, err := pss.NewPss(pskad, psparams, nil)
 			if err != nil {
 				return nil, err
 			}
