@@ -30,6 +30,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -151,6 +152,17 @@ func NewServer(api *api.API, corsString string) *Server {
 		),
 		"POST": Adapt(
 			http.HandlerFunc(server.HandlePostFeed),
+			defaultMiddlewares...,
+		),
+	})
+
+	mux.Handle("/doug-feed:/", methodHandler{
+		"GET": Adapt(
+			http.HandlerFunc(server.HandleGetFeed),
+			defaultMiddlewares...,
+		),
+		"POST": Adapt(
+			http.HandlerFunc(server.HandlePostDougFeed),
 			defaultMiddlewares...,
 		),
 	})
@@ -527,6 +539,51 @@ func (s *Server) HandlePostFeed(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Add("Content-type", "application/json")
 	}
+}
+
+type DougFeedUpdate struct {
+	Bzzaccount string `json:"bzzaccount"`
+	Password   string `json:"password"`
+	Data       string `json:"data"`
+}
+
+// Handles doug-feed posts
+// simply calls the cli e.g.: swarm --bzzaccount 02ad4272c7c7ec9a0f79c280f3e82136a832c611 --password ~/Desktop/swarm_password2 feed update 0x1bb51dd2a0a56b01ce9f7159646cd274594ee40febad3d7a3f230d354a6b6f2472
+func (s *Server) HandlePostDougFeed(w http.ResponseWriter, r *http.Request) {
+
+	// Read body
+	b, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	// Unmarshal
+	var msg DougFeedUpdate
+	err = json.Unmarshal(b, &msg)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "body: %s\n", b)
+	fmt.Fprintf(os.Stdout, "bzzaccount: %s\n", msg.Bzzaccount)
+
+	//output, err := json.Marshal(msg)
+	//fmt.Fprintf(os.Stdout, "bzzaccount: %s\n", output.Bzzaccount)
+
+	//cmd := exec.Command("swarm", "--bzzaccount", "02ad4272c7c7ec9a0f79c280f3e82136a832c611", "--password", "/Users/doug/Desktop/swarm_password2", "feed", "update", "0x1bb51dd2a0a56b01ce9f7159646cd274594ee40febad3d7a3f230d354a6b6f2472")
+	cmd := exec.Command("swarm", "--bzzaccount", msg.Bzzaccount, "--password", msg.Password, "feed", "update", msg.Data)
+	//cmd := exec.Command("swarm", "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		RespondError(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	//fmt.Printf("combined out:\n%s\n", string(out))
+	fmt.Fprint(w, string(out))
+
 }
 
 // HandleGetFeed retrieves Swarm feeds updates:
