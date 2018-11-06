@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"io"
 	"io/ioutil"
 	"mime"
@@ -158,7 +159,7 @@ func NewServer(api *api.API, corsString string) *Server {
 
 	mux.Handle("/doug-feed:/", methodHandler{
 		"GET": Adapt(
-			http.HandlerFunc(server.HandleGetFeed),
+			http.HandlerFunc(server.HandleGetDougFeed),
 			defaultMiddlewares...,
 		),
 		"POST": Adapt(
@@ -195,6 +196,8 @@ type Server struct {
 }
 
 func (s *Server) HandleBzzGet(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
 	log.Debug("handleBzzGet", "ruid", GetRUID(r.Context()), "uri", r.RequestURI)
 	if r.Header.Get("Accept") == "application/x-tar" {
 		uri := GetURI(r.Context())
@@ -356,6 +359,7 @@ func (s *Server) HandlePostFiles(w http.ResponseWriter, r *http.Request) {
 	log.Debug("stored content", "ruid", ruid, "key", newAddr)
 
 	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, newAddr)
 }
@@ -471,6 +475,8 @@ func (s *Server) HandleDelete(w http.ResponseWriter, r *http.Request) {
 // The POST request admits a JSON structure as defined in the feeds package: `feed.updateRequestJSON`
 // The requests can be to a) create a feed manifest, b) update a feed or c) both a+b: create a feed manifest and publish a first update
 func (s *Server) HandlePostFeed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
 	ruid := GetRUID(r.Context())
 	uri := GetURI(r.Context())
 	log.Debug("handle.post.feed", "ruid", ruid)
@@ -545,11 +551,15 @@ type DougFeedUpdate struct {
 	Bzzaccount string `json:"bzzaccount"`
 	Password   string `json:"password"`
 	Data       string `json:"data"`
+	Topic      string `json:"topic"`
+	Name       string `json:"name"`
 }
 
 // Handles doug-feed posts
 // simply calls the cli e.g.: swarm --bzzaccount 02ad4272c7c7ec9a0f79c280f3e82136a832c611 --password ~/Desktop/swarm_password2 feed update 0x1bb51dd2a0a56b01ce9f7159646cd274594ee40febad3d7a3f230d354a6b6f2472
 func (s *Server) HandlePostDougFeed(w http.ResponseWriter, r *http.Request) {
+
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Read body
 	b, err := ioutil.ReadAll(r.Body)
@@ -574,16 +584,92 @@ func (s *Server) HandlePostDougFeed(w http.ResponseWriter, r *http.Request) {
 	//fmt.Fprintf(os.Stdout, "bzzaccount: %s\n", output.Bzzaccount)
 
 	//cmd := exec.Command("swarm", "--bzzaccount", "02ad4272c7c7ec9a0f79c280f3e82136a832c611", "--password", "/Users/doug/Desktop/swarm_password2", "feed", "update", "0x1bb51dd2a0a56b01ce9f7159646cd274594ee40febad3d7a3f230d354a6b6f2472")
-	cmd := exec.Command("swarm", "--bzzaccount", msg.Bzzaccount, "--password", msg.Password, "feed", "update", msg.Data)
+	args := []string{"--bzzaccount", msg.Bzzaccount, "--password", msg.Password, "feed", "update", msg.Data}
+
+	if msg.Topic != "" {
+		args = append(args, "--topic", hexutil.Encode([]byte(msg.Topic)))
+		fmt.Fprintf(os.Stdout, "topic: %x\n", hexutil.Encode([]byte(msg.Topic)))
+	}
+
+	if msg.Name != "" {
+		args = append(args, "--name", msg.Name)
+		fmt.Fprintf(os.Stdout, "name: %x\n", msg.Name)
+	}
+
+	cmd := exec.Command("swarm", args...)
 	//cmd := exec.Command("swarm", "--help")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		RespondError(w, r, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	//fmt.Printf("combined out:\n%s\n", string(out))
-	fmt.Fprint(w, string(out))
+	fmt.Printf("combined out:\n%s\n", string(out))
+	//fmt.Fprint(w, string(out))
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "SUCCESS")
 
+}
+
+type DougFeedInfo struct {
+	Bzzaccount string `json:"bzzaccount"`
+	Password   string `json:"password"`
+	Topic      string `json:"topic"`
+	Name       string `json:"name"`
+}
+
+// Handles doug-feed posts
+// simply calls the cli e.g.: swarm --bzzaccount 02ad4272c7c7ec9a0f79c280f3e82136a832c611 --password ~/Desktop/swarm_password2 feed update 0x1bb51dd2a0a56b01ce9f7159646cd274594ee40febad3d7a3f230d354a6b6f2472
+func (s *Server) HandleGetDougFeed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Read body
+	b, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "body: %s\n", b)
+
+	//cmd := exec.Command("swarm", "--bzzaccount", "02ad4272c7c7ec9a0f79c280f3e82136a832c611", "--password", "/Users/doug/Desktop/swarm_password2", "feed", "update", "0x1bb51dd2a0a56b01ce9f7159646cd274594ee40febad3d7a3f230d354a6b6f2472")
+
+	bzzAccount := r.URL.Query().Get("bzzaccount")
+	password := r.URL.Query().Get("password")
+
+	fmt.Fprintf(os.Stdout, "password: %s\n", password)
+
+	args := []string{"--bzzaccount", bzzAccount, "--password", password, "feed", "info"}
+
+	topic := r.URL.Query().Get("topic")
+	if topic != "" {
+		args = append(args, "--topic", hexutil.Encode([]byte(topic)))
+		fmt.Fprintf(os.Stdout, "topic: %x\n", hexutil.Encode([]byte(topic)))
+	}
+
+	name := r.URL.Query().Get("name")
+	if name != "" {
+		args = append(args, "--name", name)
+		fmt.Fprintf(os.Stdout, "name: %s\n", name)
+	}
+
+	user := r.URL.Query().Get("user")
+	if user != "" {
+		args = append(args, "--user", user)
+		fmt.Fprintf(os.Stdout, "user: %s\n", user)
+	}
+
+	cmd := exec.Command("swarm", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		RespondError(w, r, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Add("Content-type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	fmt.Fprint(w, string(out))
 }
 
 // HandleGetFeed retrieves Swarm feeds updates:
@@ -602,6 +688,8 @@ func (s *Server) HandlePostDougFeed(w http.ResponseWriter, r *http.Request) {
 // meta=1 - get feed metadata and status information instead of performing a feed query
 // NOTE: meta=1 will be deprecated in the near future
 func (s *Server) HandleGetFeed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
 	ruid := GetRUID(r.Context())
 	uri := GetURI(r.Context())
 	log.Debug("handle.get.feed", "ruid", ruid)
@@ -649,6 +737,14 @@ func (s *Server) HandleGetFeed(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		code, err2 := s.translateFeedError(w, r, "feed lookup fail", err)
 		RespondError(w, r, err2.Error(), code)
+		return
+	}
+
+	if r.URL.Query().Get("hex") == "1" {
+		encodedData := hexutil.Encode(data)
+		w.Header().Set("Content-Type", "text/plain")
+
+		fmt.Fprint(w, string(encodedData))
 		return
 	}
 
